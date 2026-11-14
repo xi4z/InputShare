@@ -18,6 +18,24 @@ from utils.logger import LOGGER, LogType
 Menu = pystray.Menu
 MenuItem = pystray.MenuItem
 
+# pystray 创建通知区窗口后会调用 ChangeWindowMessageFilterEx。该调用在部分
+# 环境下返回 ERROR_ACCESS_DENIED（WinError 5），pystray 会把它当成致命错误，
+# 整个托盘线程随即退出，托盘图标不会出现。这个调用只是为了允许提权进程接收
+# WM_TASKBARCREATED，失败时忽略即可，因此这里包一层屏蔽该异常。
+try:
+    from pystray._util import win32 as _pystray_win32
+    _original_change_filter = _pystray_win32.ChangeWindowMessageFilterEx
+
+    def _tolerant_change_filter(*args, **kwargs):
+        try:
+            return _original_change_filter(*args, **kwargs)
+        except OSError:
+            return True
+
+    _pystray_win32.ChangeWindowMessageFilterEx = _tolerant_change_filter
+except Exception:
+    pass
+
 tray = None
 
 def create_tray(client_socket: socket.socket):
@@ -79,7 +97,10 @@ def create_tray(client_socket: socket.socket):
         menu=tray_menu,
     )
     LOGGER.write(LogType.Info, "Tray started.")
-    tray.run()
+    try:
+        tray.run()
+    except Exception as e:
+        LOGGER.write(LogType.Error, "Tray failed: " + repr(e))
 
 def tray_thread_factory(client_socket: socket.socket) -> VoidCallable:
     def close_tray():
