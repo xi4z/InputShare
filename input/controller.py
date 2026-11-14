@@ -34,6 +34,7 @@ def schedule_toggle(force: bool | None = None):
         keyboard_controller.release(keyboard.Key.ctrl)
         keyboard_controller.release(keyboard.Key.alt)
     is_redirecting = force if force is not None else not is_redirecting
+    LOGGER.write(LogType.Info, f"Toggle requested, is_redirecting={is_redirecting}")
     toggle_event.set()
 
 def schedule_exit(errno: Exception | None = None):
@@ -46,13 +47,19 @@ def schedule_exit(errno: Exception | None = None):
 switch_hotkey = keyboard.HotKey(keyboard.HotKey.parse(SWITCH_KEY_COMBINATION), schedule_toggle)
 exit_hotkey = keyboard.HotKey(keyboard.HotKey.parse(EXIT_KEY_COMBINATION), schedule_exit)
 
+diagnostic_key_counter = 0
+DIAGNOSTIC_KEY_LIMIT = 60
+
 def keyboard_press_handler_factory(callback: KeyEventCallback):
     def keyboard_press_handler(k: keyboard.Key | keyboard.KeyCode | None):
-        global is_redirecting, keyboard_listener
+        global is_redirecting, keyboard_listener, diagnostic_key_counter
         assert keyboard_listener is not None
         if k is None: return
 
         canonical_k = keyboard_listener.canonical(k)
+        if diagnostic_key_counter < DIAGNOSTIC_KEY_LIMIT:
+            diagnostic_key_counter += 1
+            LOGGER.write(LogType.Info, f"Key press received: {canonical_k!r}")
         switch_hotkey.press(canonical_k)
         exit_hotkey.press(canonical_k)
         callback(canonical_k, is_redirecting)
@@ -143,6 +150,7 @@ def main_loop(
             on_release=keyboard_release_handler_factory(keyboard_release_callback),
         )
         keyboard_listener.start()
+        LOGGER.write(LogType.Info, "Keyboard listener started, running=" + str(keyboard_listener.running))
         toggle_event.wait()
         toggle_event.clear()
         before_toggle(is_redirecting)
