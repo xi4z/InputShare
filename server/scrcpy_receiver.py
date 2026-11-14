@@ -26,7 +26,7 @@ def push_server(device: AdbDevice):
 
 def server_process_factory() -> subprocess.Popen | Exception:
     INSTALL_SCRCPY_SERVER_COMMAND = "CLASSPATH=/data/local/tmp/scrcpy-server-manual.jar \
-app_process / com.genymobile.scrcpy.Server 2.7 \
+app_process / com.genymobile.scrcpy.Server 5.0.1 \
 tunnel_forward=true video=false audio=false control=true \
 cleanup=false raw_stream=true send_dummy_byte=true max_size=4096"
     primary_device = get_adb_device()
@@ -39,11 +39,32 @@ cleanup=false raw_stream=true send_dummy_byte=true max_size=4096"
             text=True,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        output = process.stdout.readline() # type: ignore
     except Exception as e:
         LOGGER.write(LogType.Error, "Failed to start subprocess: " + str(e))
         return e
-    LOGGER.write(LogType.Server, output)
+
+    server_started = threading.Event()
+
+    def drain(stream, first_line_event: threading.Event | None):
+        try:
+            for line in iter(stream.readline, ''):
+                if line.strip():
+                    LOGGER.write(LogType.Server, line.rstrip())
+                    if first_line_event is not None and not first_line_event.is_set():
+                        first_line_event.set()
+        except Exception:
+            pass
+        finally:
+            try: stream.close()
+            except Exception: pass
+            if first_line_event is not None:
+                LOGGER.write(LogType.Server, "Scrcpy server process exited, exit code: " + str(process.poll()))
+
+    threading.Thread(target=drain, args=[process.stdout, server_started], daemon=True).start()
+    threading.Thread(target=drain, args=[process.stderr, None], daemon=True).start()
+
+    if not server_started.wait(5):
+        LOGGER.write(LogType.Error, "Scrcpy server produced no output within 5 seconds.")
     time.sleep(1)
     return process
 
