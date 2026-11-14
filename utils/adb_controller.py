@@ -51,7 +51,7 @@ def start_adb_server():
     else: # adb server to be started
         LOGGER.write(LogType.Adb, "start-server output: \n" + stderr)
 
-def try_pairing(addr: str, pairing_code: str, timeout=3.0) -> bool:
+def try_pairing(addr: str, pairing_code: str, timeout: float=20.0) -> bool:
     command = f"{ADB_BIN_PATH} -P {ADB_SERVER_PORT} pair {addr} {pairing_code}"
     try:
         process = subprocess.Popen(
