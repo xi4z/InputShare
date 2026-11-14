@@ -44,8 +44,24 @@ def schedule_exit(errno: Exception | None = None):
     schedule_toggle()
     exit_event.set()
 
-switch_hotkey = keyboard.HotKey(keyboard.HotKey.parse(SWITCH_KEY_COMBINATION), schedule_toggle)
-exit_hotkey = keyboard.HotKey(keyboard.HotKey.parse(EXIT_KEY_COMBINATION), schedule_exit)
+LOCAL_VK_CONTROL = (0x11, 0xA2, 0xA3)
+LOCAL_VK_MENU = (0x12, 0xA4, 0xA5)
+LOCAL_VK_S = 0x53
+LOCAL_VK_Q = 0x51
+
+pressed_ctrl = False
+pressed_alt = False
+switch_key_armed = True
+exit_key_armed = True
+
+def reset_hotkey_state():
+    # 热键改用虚拟键码匹配，不再依赖字符解析，避免输入法或键盘布局影响匹配；
+    # 监听器重建后把按键状态清空，防止上一次的按下状态残留。
+    global pressed_ctrl, pressed_alt, switch_key_armed, exit_key_armed
+    pressed_ctrl = False
+    pressed_alt = False
+    switch_key_armed = True
+    exit_key_armed = True
 
 diagnostic_key_counter = 0
 DIAGNOSTIC_KEY_LIMIT = 60
@@ -53,27 +69,52 @@ DIAGNOSTIC_KEY_LIMIT = 60
 def keyboard_press_handler_factory(callback: KeyEventCallback):
     def keyboard_press_handler(k: keyboard.Key | keyboard.KeyCode | None):
         global is_redirecting, keyboard_listener, diagnostic_key_counter
+        global pressed_ctrl, pressed_alt, switch_key_armed, exit_key_armed
         assert keyboard_listener is not None
         if k is None: return
 
         canonical_k = keyboard_listener.canonical(k)
+        vk = getattr(k, 'vk', None)
         if diagnostic_key_counter < DIAGNOSTIC_KEY_LIMIT:
             diagnostic_key_counter += 1
-            LOGGER.write(LogType.Info, f"Key press received: {canonical_k!r}")
-        switch_hotkey.press(canonical_k)
-        exit_hotkey.press(canonical_k)
+            LOGGER.write(LogType.Info, f"Key press received: {canonical_k!r} vk={vk}")
+
+        is_ctrl = vk in LOCAL_VK_CONTROL or canonical_k in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r)
+        is_alt = vk in LOCAL_VK_MENU or canonical_k in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr)
+
+        if is_ctrl:
+            pressed_ctrl = True
+        elif is_alt:
+            pressed_alt = True
+        elif vk == LOCAL_VK_S and switch_key_armed and pressed_ctrl and pressed_alt:
+            switch_key_armed = False
+            schedule_toggle()
+        elif vk == LOCAL_VK_Q and exit_key_armed and pressed_ctrl and pressed_alt:
+            exit_key_armed = False
+            schedule_exit()
+
         callback(canonical_k, is_redirecting)
     return keyboard_press_handler
 
 def keyboard_release_handler_factory(callback: KeyEventCallback):
     def keyboard_release_handler(k: keyboard.Key | keyboard.KeyCode | None):
         global is_redirecting, keyboard_listener
+        global pressed_ctrl, pressed_alt, switch_key_armed, exit_key_armed
         assert keyboard_listener is not None
         if k is None: return
 
         canonical_k = keyboard_listener.canonical(k)
-        switch_hotkey.release(canonical_k)
-        exit_hotkey.release(canonical_k)
+        vk = getattr(k, 'vk', None)
+
+        if vk in LOCAL_VK_CONTROL or canonical_k in (keyboard.Key.ctrl, keyboard.Key.ctrl_l, keyboard.Key.ctrl_r):
+            pressed_ctrl = False
+        elif vk in LOCAL_VK_MENU or canonical_k in (keyboard.Key.alt, keyboard.Key.alt_l, keyboard.Key.alt_r, keyboard.Key.alt_gr):
+            pressed_alt = False
+        elif vk == LOCAL_VK_S:
+            switch_key_armed = True
+        elif vk == LOCAL_VK_Q:
+            exit_key_armed = True
+
         callback(canonical_k, is_redirecting)
     return keyboard_release_handler
 
@@ -150,13 +191,22 @@ def main_loop(
             on_release=keyboard_release_handler_factory(keyboard_release_callback),
         )
         keyboard_listener.start()
+        reset_hotkey_state()
         LOGGER.write(LogType.Info, "Keyboard listener started, running=" + str(keyboard_listener.running))
+
+        def _watch_listener(listener):
+            time.sleep(1.5)
+            LOGGER.write(LogType.Info, "Keyboard listener alive after 1.5s: " + str(listener.running))
+        threading.Thread(target=_watch_listener, args=[keyboard_listener], daemon=True).start()
+
         toggle_event.wait()
         toggle_event.clear()
         before_toggle(is_redirecting)
         keyboard_listener.stop()
+        keyboard_listener.join(1.0)
 
     mouse_listener.stop()
     exit_mask()
     close_edge_portal()
     return main_errno
+
